@@ -1,0 +1,122 @@
+
+
+#
+# general options:
+#
+#rsync_options: -auv --del --delete-excluded --numeric-ids
+#mount_options: -o noatime,ro
+#snap_extension: -snap
+#dry_run: true
+dry_run: false
+#step_by_step: true
+step_by_step: false
+#loglevel: 5
+#logfile: /var/log/lvbak.log
+#pidfile: /var/run/lvbak.pid
+
+
+
+#
+# backup definitions:
+#
+backups:
+
+- name: vserver1
+  mountbase: /BACKUP/lvbak/mnt/vserver1
+  destination: /BACKUP/lvbak/vserver1
+  excludes:
+  - /tmp/*
+  sources:
+  - device: /dev/r1/root
+    snap: 5G
+    mount: /
+  - device: /boot
+    bind: true
+    mount: /boot
+
+- name: vserver2
+  mountbase: /BACKUP/lvbak/mnt/vserver2
+  destination: /BACKUP/lvbak/vserver2
+  excludes:
+  - /tmp/*
+  sources:
+  - device: /dev/r1/vserver2
+    snap: 10G
+    kpartx:
+    - id: 4
+      mount: /
+    - id: 1
+      mount: /boot
+    - id: 3
+      mount: /tmp
+  - device: /dev/r1/vserver2-home
+    snap: 2G
+    mount: /home
+  - device: /dev/r1/vserver2-var
+    snap: 10G
+    mount: /var
+  - device: /dev/r1/vserver2-www
+    snap: 10G
+    mount: /var/www
+
+- name: vserver3
+  mountbase: /BACKUP/lvbak/mnt/vserver3
+  destination: /BACKUP/lvbak/vserver3
+  excludes:
+  - /tmp/*
+  sources:
+  - device: /dev/r1/vserver3
+    snap: 1G
+    kpartx:
+    - id: 2
+      mount: /
+
+- name: terminalserver
+  mountbase: /BACKUP/lvbak/mnt/terminalserver
+  destination: /BACKUP/lvbak/terminalserver
+  excludes:
+  - /tmp/*
+  sources:
+  - device: /dev/r1/terminalserver
+    snap: 2G
+    kpartx:
+    - id: 3
+      mount: /
+    - id: 2
+      mount: /boot
+  - device: /dev/r1/terminalserver-home
+    snap: 4G
+    mount: /home
+
+- name: rescue
+  mountbase: /BACKUP/lvbak/mnt/rescue
+  destination: /BACKUP/lvbak/rescue
+  excludes:
+  - /tmp/*
+  sources:
+  - device: /dev/r1/rescue
+    snap: 1G
+    mount: /
+
+- name: vserver4
+  mountbase: /BACKUP/lvbak/mnt/vserver4
+  destination: /BACKUP/lvbak/vserver4
+  excludes:
+  - /tmp/*
+  sources:
+  - device: /dev/r1/vserver4
+    snap: 1G
+    kpartx:
+    - id: 2
+      mount: /
+
+- name: dumps
+  mountbase: /BACKUP/lvbak/mnt/dumps
+  destination: /BACKUP/lvbak/dumps
+  excludes:
+  - /tmp/*
+  sources:
+  - device: /dev/r1/bak-dumps
+    snap: 1G
+    mount: /
+

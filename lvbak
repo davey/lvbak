@@ -1,0 +1,380 @@
+#!/usr/bin/ruby
+
+#
+# backup tool to backup logical volumes (LVM)
+#
+# creates hardlinked, efficient revisions like rsnapshot
+# config file is expected to be /etc/lvbak.conf
+#
+# by David Mayr, lvbak(at)davey.de, 2010.02.01
+#
+
+
+class Lvbak
+
+
+  require 'yaml'
+
+
+  # config
+  COLORS = {
+    :blink =>    "\033[1;05m",
+    :white =>    "\033[1;37m",
+    :red =>      "\033[1;31m",
+    :green =>    "\033[1;32m",
+    :yellow =>   "\033[1;33m",
+    :blue =>     "\033[1;34m",
+    :mangenta => "\033[1;35m",
+    :cyan =>     "\033[1;36m",
+    :nocolor =>  "\033[0m"
+  }
+  DEFAULT = {
+    :cfg_file => '/etc/lvbak.conf',
+    :color => :white,
+    :pidfile => '/var/run/lvbak.pid',
+    :logfile => '/var/log/lvbak.log',
+    :loglevel => 5,
+    :snap_extension => '-snap',
+    :rsync_opts => '-auv --del --delete-excluded --numeric-ids',
+    :mount_opts => '-o noatime,ro',
+    :dry_run => true,
+    :step_by_step => true
+  }
+
+
+  def initialize( cfg_file=nil, backup=nil )
+
+    # read config file
+    cfg_file ||= DEFAULT[:cfg_file]
+    cfg = YAML.load_file( cfg_file )
+    @snap_extension = cfg['snap_extension'] || DEFAULT[:snap_extension]
+    @step_by_step   = cfg['step_by_step']
+    @step_by_step   = DEFAULT[:step_by_step] if @step_by_step.nil?
+    @rsync_opts     = cfg['rsync_options']  || DEFAULT[:rsync_opts]
+    @mount_opts     = cfg['mount_options']  || DEFAULT[:mount_opts]
+    @pidfile        = cfg['pidfile']  || DEFAULT[:pidfile]
+    @logfile        = cfg['logfile']  || DEFAULT[:logfile]
+    @loglevel       = cfg['loglevel'] || DEFAULT[:loglevel]
+    @dry_run        = cfg['dry_run']
+    @dry_run        = DEFAULT[:dry_run] if @dry_run.nil?
+    @backups        = cfg['backups']
+    @sources_in_use = []
+
+    # install signal handler
+    Signal.trap( "TERM") { cleanup }
+    Signal.trap( "INT" ) { cleanup }
+    Signal.trap( "HUP" ) { cleanup }
+
+    check_pid
+
+    log "=====START=======================================================", 1
+    config_check
+  end
+
+
+  # get information about configured backups
+  #
+  def info
+    out "\nBACKUP DETAILS:\n", :color=>:green
+    @backups.each do |backup|
+      out "===== #{backup['name']} #{backup.to_yaml}"
+    end
+    out "BACKUP NAMES:\n", :color=>:green
+    @backups.map{|b|b['name']}.each {|b| out "  - #{b}" }
+  end
+
+
+  # run one of the backups defined in the config file
+  #
+  def backup( backup_data )
+
+    # get backup config hash
+    backup = backup_data if backup_data.is_a?( Hash )
+    backup = @backups.select{|b| backup_data==b['name'] }.first if backup_data.is_a?( String )
+    backup || err( 'incorrect backup data or backup name',1 )
+    # get config
+    name = backup['name'] || err('need backup name [name]',1)
+    sources = backup['sources'] || err('need sources [sources]',1)
+    excludes = backup['excludes']
+    mountbase = backup['mountbase'] || err('need mountbase [mountbase]',1)
+    destination = backup['destination'] || err('need destination directory [destination]',1)
+    # prepare sources, create revision and release source
+    out "\nBACKUP START #{name}  (mountbase: #{mountbase}, destination: #{destination})\n", :color=>:yellow
+    log "BACKUP START #{name}  (mountbase: #{mountbase}, destination: #{destination})", 2
+    sources.each { |source| prepare_source( source, mountbase ) }
+    create_revision( excludes, mountbase, destination )
+    sources.reverse.each { |source| release_source( source, mountbase ) }
+  end
+
+
+  # go through backups and run all
+  #
+  def backup_all
+    @backups.each { |b| backup( b ) }
+  end
+
+
+
+  private
+  
+
+
+  # clean up
+  #
+  def cleanup
+    log "Terminating...", 1
+    out "Terminating... sources_in_use:#{@sources_in_use.inspect}", :color=>:red
+    @sources_in_use.reverse.each { |source,mountbase| release_source( source, mountbase ) }
+    File.delete @pidfile if File.exists? @pidfile
+    exit 255
+  end
+
+
+  # check pidfile / if we are already running elsewhere
+  # and create new one if it does not exist
+  #
+  def check_pid
+
+    if File.exists? @pidfile
+      oldpid = nil
+      File.open( @pidfile ) do |f|
+        lines = f.readlines
+        oldpid = lines[0].chop.to_i if lines[0]
+      end
+      # check if oldpid is an exisiting process
+      begin
+        if oldpid and Process.kill( 0, oldpid )
+          msg  = "There already seems to be an instance running with PID #{oldpid}\n"
+          msg += "Please check this and remove the pidfile '#{@pidfile}' after that."
+          err( msg, 99 )
+        end
+      rescue Errno::ESRCH:
+      end
+    end
+    # write new pid
+    File.open( @pidfile, File::RDWR|File::CREAT, 0600 ) {|f| f.puts $$ }
+  end
+
+
+  # colored output
+  #
+  def out( msg, opt={} )
+    color = COLORS[opt[:color]] || COLORS[DEFAULT[:color]]
+    nocolor = COLORS[:nocolor]
+    print "#{color}#{msg}#{nocolor}#{"\n" unless opt[:nobreak]}"
+    STDOUT.flush
+  end
+
+
+  # log
+  #
+  def log( msg, loglevel=1 )
+    if @loglevel >= loglevel
+      File.open( @logfile, 'a' ) do |f|
+        f.puts Time.now.strftime('%Y.%m.%d %H:%M:%S') + " #{$$} #{loglevel} #{msg}"
+      end
+    end
+  end
+
+
+  # run system command
+  #
+  def run( command )
+
+    # output command
+    out "    #{command}"
+    log command, 3
+    unless @dry_run
+      if @step_by_step
+        out "---> execute command above ? [Y|n] ", { :nobreak=>true, :color=>:green }
+        answer = STDIN.readline.chop
+        return if answer =~ /^n/i
+      end
+      # run command
+      cmd = open( "| #{command}" )
+      cmd.each do |line|
+        out( line.chop, :color=>:mangenta )
+        log( '| '+ line, 4 )
+      end
+      cmd.close
+      # check exitcode
+      if $? != 0
+        log "ERROR: (#{$?})", 1
+        out "ERROR: (#{$?})", :color=>:red
+        out "       hit enter to continue, press ctrl-c to abort", :color=>:red
+        STDIN.readline
+      end
+    end
+  end
+
+
+  # help for config errors
+  #
+  def err( msg, exitcode=nil )
+    out msg
+    log "ERROR: #{msg}"
+    exit exitcode if exitcode
+  end
+
+
+  def create_snapshot( device, size )
+    lv = device.split('/')[3]
+    snaplv = lv + @snap_extension
+    snapdev = device + @snap_extension
+    err("snapshot '#{snapdev}' already exists!", 3 ) if File.exists?( snapdev )
+    run "lvcreate --snapshot --size #{size} --name #{snaplv} #{device}"
+    return snapdev
+  end
+
+
+  def mount_device( device, mountbase, mount, bind=false )
+    mountpoint = "#{mountbase}/#{mount}"
+    run "mkdir -p #{mountpoint}"
+    run "mount #{@mount_opts} #{'--bind' if bind} #{device} #{mountpoint}"
+  end
+
+
+  def create_kpartx( device, mountbase, kpartx )
+    device = device.sub('dev','dev/mapper').gsub('-','--').sub(/\/([^\/]*)$/,'-\1')
+    run "kpartx -a #{device}"
+    kpartx.each {|part| mount_device( device + part['id'].to_s, mountbase, part['mount'] ) }
+  end
+
+
+  def remove_kpartx( device, mountbase, kpartx )
+    kpartx.reverse.each {|part| run "umount #{mountbase}/#{part['mount']}" }
+    run "kpartx -d #{device}"
+  end
+
+
+  def get_highest_revision( destination )
+    highest_revision = -1
+    Dir.entries( destination ).each do |e|
+      dir = destination +'/'+ e
+      next unless File.directory?( dir )
+      next unless rev = /^r(\d{1,3})$/.match( e )
+      highest_revision = rev[1].to_i if rev and rev[1].to_i > highest_revision
+    end
+    highest_revision
+  end
+
+
+  # rotate revisions, current backup goes to r0
+  # if at least one rev exists, create a hard linked copy
+  #
+  def rotate_revisions( destination )
+    case highest_revision = get_highest_revision( destination )
+    when -1
+      run "mkdir -m 0700 -p  #{destination}/r0"
+    when 0
+      run "cp -al  #{destination}/r0  #{destination}/r1"
+    else
+      highest_revision.downto(1).each do |r|
+        run "mv  #{destination}/r#{r}/  #{destination}/r#{r+1}/"
+      end
+      run "cp -al  #{destination}/r0  #{destination}/r1"
+    end
+  end
+
+
+  # run actual backup via rsync
+  #
+  def rsync_backup( excludes, mountbase, destination )
+    opts  = @rsync_opts
+    opts += excludes.map{|e| " --exclude=#{e}" }.join
+    run "rsync #{opts} #{mountbase}/ #{destination}/r0/"
+    run "touch #{destination}/r0"
+  end
+
+
+  # basic config check
+  #
+  def config_check
+    err( "snap_extension must not be empty!", 2 ) if @snap_extension.to_s.empty?
+  end
+
+
+  # def return config of a source
+  #
+  def source_config( source )
+    s = source
+    err('need source device [device]') unless s['device']
+    err('need snapshot size [snap] or bind=true [bind]') unless s['snap'] or s['mount']
+    [ s['snap'], s['bind'], s['mount'], s['kpartx'], s['device'],  ]
+  end
+
+
+  # prepare all sources ( create snapshot, kpartx, mount) 
+  # 
+  def prepare_source( source, mountbase )
+
+    snap_size, bind, mount, kpartx, device = source_config( source )
+    # create snapshot, mount or create kpartx devices and mount them
+    out "  PREPARE SOURCE #{device} ...", :color=>:cyan
+    log "PREPARE SOURCE #{device} ...", 2
+    @sources_in_use << [ source, mountbase ]
+    device = create_snapshot( device, snap_size ) if snap_size
+    create_kpartx( device, mountbase, kpartx ) if kpartx
+    mount_device( device, mountbase, mount, bind ) if mount
+  end
+
+
+  # create a new revision (create hardlink-copy of previous rev, run rsync)
+  # 
+  def create_revision( excludes, mountbase, destination )
+
+    out "  CREATE REVISION and RUN BACKUP ...", :color=>:cyan
+    log "CREATE REVISION and RUN BACKUP ...", 2
+    rotate_revisions( destination ) 
+    rsync_backup( excludes, mountbase, destination )
+  end
+
+
+  # release source, unmount, remove kpartx, remove snapshot
+  #
+  def release_source( source, mountbase )
+
+    snap_size, bind, mount, kpartx, device = source_config( source )
+    device += @snap_extension unless bind
+    out "  RELEASE SOURCE #{device} ...", :color=>:cyan
+    log "RELEASE SOURCE #{device} ...", 2
+    # stop kpartx / device / unmount
+    remove_kpartx( device, mountbase, kpartx ) if kpartx
+    run "umount #{mountbase}/#{mount}" if mount and not kpartx
+    # check if the lv to delete is really a snapshot
+    if snap_size
+      run("lvdisplay #{device} | grep 'LV snapshot status     active destination' >/dev/null")
+      if $? == 0
+        run "lvremove -f #{device}"
+      else
+        err("Will not remove #{device}, because it's NOT a snapshot!",1)
+      end
+    end
+    @sources_in_use.delete [ source, mountbase ]
+  end
+
+  
+end
+
+
+
+##############################################################################
+
+def usage
+  puts "usage:   lvbak [ info | all | <backup_name> ]"
+  exit 1
+end
+
+lvbak = Lvbak.new
+
+arg0 = ARGV[0]
+case arg0
+when nil:  usage
+when '-h':  usage
+when '--help':  usage
+when 'info':  lvbak.info
+when 'all':  lvbak.backup_all
+else
+  lvbak.backup arg0
+end
+
