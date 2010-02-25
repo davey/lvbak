@@ -24,7 +24,7 @@ class Lvbak
     :green =>    "\033[1;32m",
     :yellow =>   "\033[1;33m",
     :blue =>     "\033[1;34m",
-    :mangenta => "\033[1;35m",
+    :magenta =>  "\033[1;35m",
     :cyan =>     "\033[1;36m",
     :nocolor =>  "\033[0m"
   }
@@ -193,7 +193,7 @@ class Lvbak
       # run command
       cmd = open( "| #{command}" )
       cmd.each do |line|
-        out( line.chop, :color=>:mangenta )
+        out( line.chop, :color=>:magenta )
         log( '| '+ line, 4 )
       end
       cmd.close
