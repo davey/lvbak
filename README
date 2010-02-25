@@ -2,17 +2,17 @@
 LvBak - efficient backups of LVM volumes
 
 
-With LvBak you can backup your LVM volumes easily and efficient in Linux.
+With LvBak you can backup your LVM volumes easily and efficiently in Linux.
 LvBak is written in Ruby and can be used for free under the terms of the
-GNU General Public License ( Open Source).
+GNU General Public License (Open Source).
 
 LvBak creates a new backup revision by hardlinking the previous backup and
-updating that new revision with rsync - thats fast, space saving and 
+updating that new revision with rsync - that's fast, space saving and 
 efficient because only the changed files are copied. In contrast to
 conventional incremental backups, you have always the full directory
-tree of alle saved files of your filesystems in every backup revision.
+tree of all saved files of your filesystems in every backup revision.
 
-LvBak is hostet on  GitHub.
+LvBak is hostet on GitHub.
 
 
 The config file is expected to be /etc/lvbak.conf
