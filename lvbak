@@ -243,12 +243,14 @@ class Lvbak
 
   def remove_kpartx( device, mountbase, kpartx )
     kpartx.reverse.each {|part| run "umount #{mountbase}/#{part['mount']}" }
+    sleep 2 # wait a moment before removing
     run "kpartx -d #{device}"
   end
 
 
   def get_highest_revision( destination )
     highest_revision = -1
+    Dir.mkdir( destination ) unless File.exists?( destination )
     Dir.entries( destination ).each do |e|
       dir = destination +'/'+ e
       next unless File.directory?( dir )
@@ -280,6 +282,7 @@ class Lvbak
   # run actual backup via rsync
   #
   def rsync_backup( excludes, mountbase, destination )
+    excludes ||= []
     opts  = @rsync_opts
     opts += excludes.map{|e| " --exclude=#{e}" }.join
     run "rsync #{opts} #{mountbase}/ #{destination}/r0/"
@@ -345,6 +348,7 @@ class Lvbak
     if snap_size
       run("lvdisplay #{device} | grep 'LV snapshot status     active destination' >/dev/null")
       if $? == 0
+        sleep 2 # wait a moment before removing
         run "lvremove -f #{device}"
       else
         err("Will not remove #{device}, because it's NOT a snapshot!",1)
