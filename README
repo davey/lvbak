@@ -12,7 +12,7 @@ efficient because only the changed files are copied. In contrast to
 conventional incremental backups, you have always the full directory
 tree of all saved files of your filesystems in every backup revision.
 
-LvBak is hostet on GitHub.
+LvBak is hosted on GitHub.
 
 
 The config file is expected to be /etc/lvbak.conf
